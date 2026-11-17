@@ -1,0 +1,295 @@
+
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Create Android app project
+        run: |
+          mkdir -p app/src/main/java/com/example/cardexpense
+
+          cat > settings.gradle.kts <<'GRADLE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = "CardExpenseManager"
+          include(":app")
+          GRADLE
+
+          cat > build.gradle.kts <<'GRADLE'
+          plugins {
+              id("com.android.application") version "8.7.3" apply false
+          }
+          GRADLE
+
+          cat > app/build.gradle.kts <<'GRADLE'
+          plugins { id("com.android.application") }
+          android {
+              namespace = "com.example.cardexpense"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.example.cardexpense"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+          }
+          GRADLE
+
+          cat > app/src/main/AndroidManifest.xml <<'MANIFEST'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:allowBackup="false"
+                  android:label="카드 지출 관리"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".CardNotificationListener"
+                      android:label="카드 결제 알림 기록"
+                      android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.service.notification.NotificationListenerService" />
+                      </intent-filter>
+                  </service>
+              </application>
+          </manifest>
+          MANIFEST
+
+          cat > app/src/main/java/com/example/cardexpense/MainActivity.java <<'JAVA'
+          package com.example.cardexpense;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.view.Gravity;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import java.text.NumberFormat;
+          import java.text.SimpleDateFormat;
+          import java.util.Date;
+          import java.util.Locale;
+
+          public class MainActivity extends Activity {
+              private TextView summary;
+              private TextView records;
+
+              @Override public void onCreate(Bundle state) {
+                  super.onCreate(state);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(24, 28, 24, 20);
+                  root.setBackgroundColor(0xFFF7F8FA);
+
+                  TextView title = new TextView(this);
+                  title.setText("카드 지출 관리");
+                  title.setTextSize(26);
+                  title.setTextColor(0xFF172033);
+                  title.setGravity(Gravity.CENTER);
+                  root.addView(title);
+
+                  summary = new TextView(this);
+                  summary.setTextSize(18);
+                  summary.setTextColor(0xFF172033);
+                  summary.setPadding(0, 24, 0, 16);
+                  root.addView(summary);
+
+                  Button permission = new Button(this);
+                  permission.setText("결제 알림 접근 권한 설정");
+                  permission.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+                  root.addView(permission);
+
+                  Button refresh = new Button(this);
+                  refresh.setText("내역 새로고침");
+                  refresh.setOnClickListener(v -> refreshRecords());
+                  root.addView(refresh);
+
+                  TextView help = new TextView(this);
+                  help.setText("알림 권한을 켜면 우리카드·NH농협카드·신한카드의 결제 알림을 휴대폰 안에 기록합니다. 알림 원문은 외부 서버로 전송하지 않습니다.");
+                  help.setTextSize(13);
+                  help.setTextColor(0xFF596579);
+                  help.setPadding(0, 12, 0, 12);
+                  root.addView(help);
+
+                  ScrollView scroll = new ScrollView(this);
+                  records = new TextView(this);
+                  records.setTextSize(15);
+                  records.setTextColor(0xFF202938);
+                  records.setPadding(12, 12, 12, 12);
+                  scroll.addView(records);
+                  root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+                  setContentView(root);
+                  refreshRecords();
+              }
+
+              @Override protected void onResume() {
+                  super.onResume();
+                  refreshRecords();
+              }
+
+              private void refreshRecords() {
+                  JSONArray data;
+                  try {
+                      data = new JSONArray(getSharedPreferences("expenses", MODE_PRIVATE).getString("items", "[]"));
+                  } catch (Exception e) {
+                      data = new JSONArray();
+                  }
+
+                  long total = 0;
+                  StringBuilder out = new StringBuilder();
+                  SimpleDateFormat date = new SimpleDateFormat("MM-dd HH:mm", Locale.KOREA);
+
+                  for (int i = 0; i < data.length(); i++) {
+                      JSONObject item = data.optJSONObject(i);
+                      if (item == null) continue;
+                      long amount = item.optLong("amount", 0);
+                      total += amount;
+                      out.append(item.optString("card", "카드"))
+                         .append("  ·  ")
+                         .append(NumberFormat.getNumberInstance(Locale.KOREA).format(amount)).append("원\n")
+                         .append(item.optString("detail", "결제 내역"))
+                         .append("\n")
+                         .append(date.format(new Date(item.optLong("time", System.currentTimeMillis()))))
+                         .append("\n\n");
+                  }
+
+                  summary.setText("누적 기록 금액  " + NumberFormat.getNumberInstance(Locale.KOREA).format(total) + "원\n기록 건수  " + data.length() + "건");
+                  records.setText(data.length() == 0 ? "아직 기록된 결제 내역이 없습니다.\n먼저 위 버튼에서 알림 접근 권한을 켜주세요." : out.toString());
+              }
+          }
+          JAVA
+
+          cat > app/src/main/java/com/example/cardexpense/CardNotificationListener.java <<'JAVA'
+          package com.example.cardexpense;
+
+          import android.app.Notification;
+          import android.os.Bundle;
+          import android.service.notification.NotificationListenerService;
+          import android.service.notification.StatusBarNotification;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import java.util.Locale;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+
+          public class CardNotificationListener extends NotificationListenerService {
+              private static final Pattern AMOUNT = Pattern.compile("(\\d{1,3}(?:,\\d{3})+|\\d+)\\s*원");
+
+              @Override public void onNotificationPosted(StatusBarNotification sbn) {
+                  if (sbn == null || sbn.getNotification() == null) return;
+                  Bundle extras = sbn.getNotification().extras;
+                  if (extras == null) return;
+
+                  String title = value(extras.getCharSequence(Notification.EXTRA_TITLE));
+                  String body = value(extras.getCharSequence(Notification.EXTRA_BIG_TEXT));
+                  if (body.isEmpty()) body = value(extras.getCharSequence(Notification.EXTRA_TEXT));
+                  String combined = (title + " " + body).trim();
+                  if (combined.isEmpty()) return;
+
+                  String lower = combined.toLowerCase(Locale.KOREA);
+                  if (!(lower.contains("승인") || lower.contains("결제") || lower.contains("사용"))) return;
+                  if (lower.contains("거절") || lower.contains("취소")) return;
+
+                  Matcher matcher = AMOUNT.matcher(combined);
+                  if (!matcher.find()) return;
+
+                  long amount;
+                  try {
+                      amount = Long.parseLong(matcher.group(1).replace(",", ""));
+                  } catch (Exception e) {
+                      return;
+                  }
+                  if (amount <= 0) return;
+
+                  String packageName = sbn.getPackageName() == null ? "" : sbn.getPackageName().toLowerCase(Locale.ROOT);
+                  String source = packageName + " " + combined.toLowerCase(Locale.KOREA);
+                  String card = null;
+
+                  if (source.contains("woori") || source.contains("우리카드")) card = "우리카드";
+                  else if (source.contains("nonghyup") || source.contains("nhcard") || source.contains("농협카드") || source.contains("nh농협")) card = "NH농협카드";
+                  else if (source.contains("shinhan") || source.contains("신한카드")) card = "신한카드";
+
+                  if (card == null) return;
+
+                  String detail = combined.replaceAll("\\s+", " ").trim();
+                  if (detail.length() > 140) detail = detail.substring(0, 140);
+                  long now = System.currentTimeMillis();
+
+                  try {
+                      android.content.SharedPreferences prefs = getSharedPreferences("expenses", MODE_PRIVATE);
+                      JSONArray old = new JSONArray(prefs.getString("items", "[]"));
+
+                      if (old.length() > 0) {
+                          JSONObject last = old.optJSONObject(old.length() - 1);
+                          if (last != null && last.optLong("amount") == amount && last.optString("detail").equals(detail) && now - last.optLong("time") < 5000) return;
+                      }
+
+                      JSONArray updated = new JSONArray();
+                      int start = Math.max(0, old.length() - 499);
+                      for (int i = start; i < old.length(); i++) updated.put(old.get(i));
+
+                      JSONObject item = new JSONObject();
+                      item.put("card", card);
+                      item.put("amount", amount);
+                      item.put("detail", detail);
+                      item.put("time", now);
+                      updated.put(item);
+                      prefs.edit().putString("items", updated.toString()).apply();
+                  } catch (Exception ignored) { }
+              }
+
+              private String value(CharSequence value) {
+                  return value == null ? "" : value.toString();
+              }
+          }
+          JAVA
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: card-expense-manager-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
