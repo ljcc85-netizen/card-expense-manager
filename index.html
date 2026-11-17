@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>내 카드값 관리</title>
+  <style>
+    :root { --primary: #2563eb; --bg: #f8fafc; --card: #ffffff; --text: #1e293b; --sub: #64748b; }
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--text); max-width: 480px; margin: 0 auto; }
+    h1 { font-size: 1.4rem; margin: 0 0 16px; display: flex; justify-content: space-between; align-items: center; }
+    .box { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+    .total-label { font-size: 0.9rem; color: var(--sub); }
+    .total-amount { font-size: 1.8rem; font-weight: 800; color: var(--primary); margin-top: 4px; }
+    .form-group { display: flex; flex-direction: column; gap: 8px; }
+    input, select, button { padding: 12px; border-radius: 10px; border: 1px solid #cbd5e1; font-size: 1rem; }
+    button { background: var(--primary); color: white; border: none; font-weight: 600; cursor: pointer; }
+    button:active { opacity: 0.9; }
+    .card-item { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #f1f5f9; }
+    .card-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+    .card-header { display: flex; justify-content: space-between; font-weight: 600; font-size: 0.95rem; margin-bottom: 6px; }
+    .progress-bg { background: #e2e8f0; height: 8px; border-radius: 4px; overflow: hidden; }
+    .progress-fill { background: var(--primary); height: 100%; transition: width 0.3s; }
+    .list-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #f1f5f9; }
+    .list-item:last-child { border-bottom: none; }
+    .item-info { display: flex; flex-direction: column; }
+    .item-title { font-weight: 600; font-size: 0.95rem; }
+    .item-sub { font-size: 0.8rem; color: var(--sub); }
+    .item-right { display: flex; align-items: center; gap: 10px; }
+    .del-btn { background: #fee2e2; color: #ef4444; padding: 4px 8px; font-size: 0.8rem; border-radius: 6px; }
+  </style>
+</head>
+<body>
+
+  <h1>💳 카드값 관리 <span id="monthLabel" style="font-size:0.9rem; color:var(--sub);"></span></h1>
+
+  <div class="box">
+    <div class="total-label">이번 달 총 사용 금액</div>
+    <div class="total-amount" id="totalAmount">0원</div>
+  </div>
+
+  <div class="box">
+    <div style="font-weight:700; margin-bottom:12px;">카드별 실적 현황</div>
+    <div id="cardStatusList"></div>
+    <div style="margin-top:12px; display:flex; gap:6px;">
+      <input type="text" id="newCardName" placeholder="새 카드명" style="flex:1; padding:8px; font-size:0.9rem;">
+      <input type="number" id="newCardGoal" placeholder="목표실적(원)" style="width:120px; padding:8px; font-size:0.9rem;">
+      <button onclick="addCard()" style="padding:8px 12px; font-size:0.9rem;">추가</button>
+    </div>
+  </div>
+
+  <div class="box">
+    <div style="font-weight:700; margin-bottom:12px;">지출 입력</div>
+    <div class="form-group">
+      <select id="cardSelect"></select>
+      <input type="text" id="descInput" placeholder="사용처 (예: 마트, 주유, 식비)">
+      <input type="number" id="amountInput" placeholder="결제 금액 (원)">
+      <button onclick="addExpense()">내역 추가하기</button>
+    </div>
+  </div>
+
+  <div class="box">
+    <div style="font-weight:700; margin-bottom:8px;">최근 사용 내역</div>
+    <div id="expenseList"></div>
+  </div>
+
+  <script>
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    document.getElementById('monthLabel').innerText = `${now.getMonth() + 1}월`;
+
+    let cards = JSON.parse(localStorage.getItem('my_cards')) || [
+      { name: '신한카드', goal: 300000 },
+      { name: '현대카드', goal: 500000 }
+    ];
+    let expenses = JSON.parse(localStorage.getItem('my_expenses')) || [];
+
+    function saveData() {
+      localStorage.setItem('my_cards', JSON.stringify(cards));
+      localStorage.setItem('my_expenses', JSON.stringify(expenses));
+      render();
+    }
+
+    function addCard() {
+      const name = document.getElementById('newCardName').value.trim();
+      const goal = parseInt(document.getElementById('newCardGoal').value) || 0;
+      if (!name) return alert('카드 이름을 입력하세요.');
+      cards.push({ name, goal });
+      document.getElementById('newCardName').value = '';
+      document.getElementById('newCardGoal').value = '';
+      saveData();
+    }
+
+    function addExpense() {
+      const card = document.getElementById('cardSelect').value;
+      const desc = document.getElementById('descInput').value.trim() || '일반 지출';
+      const amount = parseInt(document.getElementById('amountInput').value);
+      if (!card) return alert('카드를 먼저 추가해주세요.');
+      if (!amount || amount <= 0) return alert('올바른 금액을 입력하세요.');
+
+      expenses.unshift({
+        id: Date.now(),
+        month: currentMonth,
+        date: `${now.getMonth() + 1}/${now.getDate()}`,
+        card,
+        desc,
+        amount
+      });
+      document.getElementById('descInput').value = '';
+      document.getElementById('amountInput').value = '';
+      saveData();
+    }
+
+    function deleteExpense(id) {
+      expenses = expenses.filter(e => e.id !== id);
+      saveData();
+    }
+
+    function render() {
+      const monthlyExpenses = expenses.filter(e => e.month === currentMonth);
+      const total = monthlyExpenses.reduce((sum, e) => sum + e.amount, 0);
+      document.getElementById('totalAmount').innerText = total.toLocaleString() + '원';
+
+      const select = document.getElementById('cardSelect');
+      select.innerHTML = cards.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
+
+      const statusList = document.getElementById('cardStatusList');
+      statusList.innerHTML = cards.map(c => {
+        const spent = monthlyExpenses.filter(e => e.card === c.name).reduce((s, e) => s + e.amount, 0);
+        const pct = c.goal > 0 ? Math.min(100, Math.round((spent / c.goal) * 100)) : 0;
+        return `
+          <div class="card-item">
+            <div class="card-header">
+              <span>${c.name}</span>
+              <span>${spent.toLocaleString()}원 ${c.goal > 0 ? `/ ${c.goal.toLocaleString()}원 (${pct}%)` : ''}</span>
+            </div>
+            ${c.goal > 0 ? `<div class="progress-bg"><div class="progress-fill" style="width:${pct}%"></div></div>` : ''}
+          </div>
+        `;
+      }).join('');
+
+      const list = document.getElementById('expenseList');
+      list.innerHTML = monthlyExpenses.length ? monthlyExpenses.map(e => `
+        <div class="list-item">
+          <div class="item-info">
+            <span class="item-title">${e.desc}</span>
+            <span class="item-sub">${e.date} · ${e.card}</span>
+          </div>
+          <div class="item-right">
+            <span style="font-weight:700;">${e.amount.toLocaleString()}원</span>
+            <button class="del-btn" onclick="deleteExpense(${e.id})">삭제</button>
+          </div>
+        </div>
+      `).join('') : '<div style="color:var(--sub); font-size:0.9rem; text-align:center; padding:12px;">이번 달 지출 내역이 없습니다.</div>';
+    }
+
+    render();
+  </script>
+</body>
+</html>
+
